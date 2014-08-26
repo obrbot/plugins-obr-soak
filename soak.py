@@ -298,3 +298,13 @@ def soaked_command(event):
     """
     balance = yield from get_soaked(event)
     return "Total Soaked: {}".format(balance)
+
+
+@asyncio.coroutine
+@hook.command("active", autohelp=False)
+def active_command(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    active = yield from get_active(event)
+    return "Active: {}".format(active)
