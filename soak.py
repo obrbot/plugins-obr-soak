@@ -106,7 +106,7 @@ def get_next_soak_time(event):
     raw_result = yield from event.async(event.db.get, timer_key)
     if raw_result is None:
         soak_time = datetime.utcnow() + timedelta(seconds=soak_buildup_time)
-        delta_since_epoch = soak_time - datetime.datetime.utcfromtimestamp(0)  # hack to turn datetime into timedelta
+        delta_since_epoch = soak_time - datetime.utcfromtimestamp(0)  # hack to turn datetime into timedelta
         timestamp = delta_since_epoch.total_seconds() * 1000
         yield from event.async(event.db.set, timer_key, timestamp)
     else:
@@ -203,7 +203,7 @@ def add_doge(event, amount_added, sender=None):
 
 
 @asyncio.coroutine
-@hook.regex("([^ ]*) is soaking [0-9]* shibes with ([0-9\.]*) Doge each. Total: [0-9\.]*", single_thread=True)
+@hook.regex("([^ ]*) is soaking [0-9]* shibes with ([0-9\.]*) Doge each. Total: [0-9\.]*")
 def soaked_regex(match, event):
     """
     :type match: re.__Match[str]
