@@ -14,9 +14,9 @@ plugin_info = {
 
 doge_nick = 'DogeWallet'
 doge_channel = '#doge-coin'
-soak_buildup_time = 30
+soak_buildup_time = 15
 
-minutes_active = 5
+minutes_active = 5.1
 
 logger = logging.getLogger('obrbot')
 
@@ -119,6 +119,14 @@ def get_next_soak_time(event):
 
 
 @asyncio.coroutine
+def reset_soak_timer(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    yield from event.async(event.db.delete, timer_key)
+
+
+@asyncio.coroutine
 def get_active(event):
     users_counted = set()
     min_time = datetime.utcnow() - timedelta(minutes=minutes_active)
@@ -147,6 +155,32 @@ def update_balance(event):
 
 
 @asyncio.coroutine
+def wait_for_soaking(event):
+    soaked_future = event.conn.wait_for(
+        "{} is soaking [0-9]* shibes with [0-9\.]* Doge each. Total: ([0-9\.]*)"
+        .format(event.conn.bot_nick), nick=doge_nick)
+
+    failed_not_enough_doge = event.conn.wait_for("Not enough doge.", nick=doge_nick, chan=doge_nick)
+    failed_rate_limited = event.conn.wait_for("Please wait [0-9\.]+ seconds to send commands.",
+                                              nick=doge_nick, chan=doge_nick)
+
+    done, pending = yield from asyncio.wait([soaked_future, failed_not_enough_doge, failed_rate_limited],
+                                            loop=event.loop, return_when=asyncio.FIRST_COMPLETED, timeout=20)
+
+    for future in pending:
+        future.cancel()  # we don't care about these ones
+
+    if soaked_future in done:
+        return True, (yield from soaked_future)
+    elif failed_not_enough_doge in done:
+        return False, "Not enough doge."
+    elif failed_rate_limited in done:
+        return False, "Rate limited."
+    else:
+        return False, "{} failed to respond.".format(doge_nick)
+
+
+@asyncio.coroutine
 def soak(event, soak_time):
     """
     Soaks all balance. This will sleep until the specified soak time.
@@ -159,35 +193,31 @@ def soak(event, soak_time):
     if soak_time > now:
         # if the soak time is in the future, wait for it
         yield from asyncio.sleep((soak_time - now).total_seconds(), loop=event.loop)
+    yield from reset_soak_timer(event)
+    timer_running = False
+
     balance = yield from get_balance(event)
     active = yield from get_active(event)
     event.message("Soaking {}!".format(balance))
 
     balance = yield from update_balance(event)
+    soaking_per_person = int(balance / active)
+    # event.message("I count {} active users".format(active))
+    # event.message(".active")
+    # event.message("Soaking {} per person for a total of {}".format(soaking_per_person, soaking_per_person * active))
 
-    event.message(".soak {}".format(int(balance / active)))
+    event.message(".soak {}".format(soaking_per_person))
 
-    soaked_future = event.conn.wait_for(
-        "{} is soaking [0-9]* shibes with [0-9\.]* Doge each. Total: ([0-9\.]*)"
-        .format(event.conn.bot_nick), nick=doge_nick)
+    # Second is a match object if successful, error message string otherwise
+    success, second = yield from wait_for_soaking(event)
 
-    failed_future = event.conn.wait_for("Not enough doge.", nick=doge_nick, chan=doge_nick)
-
-    done, pending = yield from asyncio.wait([soaked_future, failed_future], loop=event.loop,
-                                            return_when=asyncio.FIRST_COMPLETED, timeout=20)
-
-    if soaked_future in done:
-        match = yield from soaked_future
+    if success:
+        match = second
         soaked_amount = Decimal(match.group(1))
         yield from add_balance(event, -soaked_amount)
         yield from add_soaked(event, soaked_amount)
-    elif failed_future in done:
-        event.message("[Soak] Soak failed: Not enough doge!")
     else:
-        event.message("[Soak] Soak failed: DogeWallet failed to respond!")
-    for future in pending:
-        future.cancel()  # we don't care anymore
-    timer_running = False
+        event.message("Soak failed: {}".format(second))
 
 
 @asyncio.coroutine
