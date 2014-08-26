@@ -39,6 +39,7 @@ def format_delta(delta):
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
+    seconds = round(seconds, 1)
     if days > 0:
         return "{}{} days {} hours {} minutes {} seconds".format(sign, days, hours, minutes, seconds)
     elif hours > 0:
@@ -106,11 +107,12 @@ def get_next_soak_time(event):
     raw_result = yield from event.async(event.db.get, timer_key)
     if raw_result is None:
         soak_time = datetime.utcnow() + timedelta(seconds=soak_buildup_time)
-        delta_since_epoch = soak_time - datetime.utcfromtimestamp(0)  # hack to turn datetime into timedelta
-        timestamp = delta_since_epoch.total_seconds() * 1000
+        # turn date into timedelta so we can get a timestamp
+        delta_since_epoch = soak_time - datetime.utcfromtimestamp(0)
+        timestamp = delta_since_epoch.total_seconds()
         yield from event.async(event.db.set, timer_key, timestamp)
     else:
-        soak_time = datetime.utcfromtimestamp(int(raw_result))
+        soak_time = datetime.utcfromtimestamp(float(raw_result))
     return soak_time
 
 
