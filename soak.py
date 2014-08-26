@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
+import math
 
 from obrbot import hook
 from obrbot.event import EventType
@@ -29,17 +30,18 @@ def format_delta(delta):
     """
     :type delta: timedelta
     """
-    seconds = delta.total_seconds()
+    seconds = math.ceil(delta.total_seconds())
+
     if seconds < 0:
         seconds = -seconds
         sign = "negative "
     else:
         sign = ""
-    seconds = abs(seconds)
+
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
-    seconds = round(seconds, 1)
+
     if days > 0:
         return "{}{} days {} hours {} minutes {} seconds".format(sign, days, hours, minutes, seconds)
     elif hours > 0:
