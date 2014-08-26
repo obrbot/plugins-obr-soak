@@ -1,0 +1,266 @@
+import asyncio
+from datetime import datetime, timedelta
+from decimal import Decimal
+import logging
+
+from obrbot import hook
+from obrbot.event import EventType
+
+plugin_info = {
+    "plugin_category": "channel-specific",
+    "command_category_name": "doge-soak"
+}
+
+doge_nick = 'DogeWallet'
+doge_channel = '#doge-coin'
+soak_buildup_time = 30
+
+minutes_active = 5
+
+logger = logging.getLogger('obrbot')
+
+balance_key = 'obrbot:plugins:obr-soak:balance'
+soaked_key = 'obrbot:plugins:obr-soak:soaked'
+timer_key = 'obrbot:plugins:obr-soak:timer'
+timer_running = False
+
+
+def format_delta(delta):
+    """
+    :type delta: timedelta
+    """
+    seconds = delta.total_seconds()
+    if seconds < 0:
+        seconds = -seconds
+        sign = "negative "
+    else:
+        sign = ""
+    seconds = abs(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if days > 0:
+        return "{}{} days {} hours {} minutes {} seconds".format(sign, days, hours, minutes, seconds)
+    elif hours > 0:
+        return "{}{} hours {} minutes {} seconds".format(sign, hours, minutes, seconds)
+    elif minutes > 0:
+        return "{}{} minutes {} seconds".format(sign, minutes, seconds)
+    else:
+        return "{}{} seconds".format(sign, seconds)
+
+
+@asyncio.coroutine
+def get_balance(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    raw_result = yield from event.async(event.db.get, balance_key)
+    if raw_result is None:
+        return 0
+    else:
+        return Decimal(raw_result.decode())
+
+
+@asyncio.coroutine
+def add_balance(event, balance):
+    """
+    :type event: obrbot.event.Event
+    """
+    logger.info("Adding {} to balance".format(balance))
+    raw_result = yield from event.async(event.db.incrbyfloat, balance_key, balance)
+    return Decimal(raw_result)
+
+
+@asyncio.coroutine
+def set_balance(event, balance):
+    """
+    :type event: obrbot.event.Event
+    """
+    raw_result = yield from event.async(event.db.set, balance_key, balance)
+    return raw_result
+
+
+@asyncio.coroutine
+def get_soaked(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    raw_result = yield from event.async(event.db.get, soaked_key)
+    return Decimal(raw_result.decode())
+
+
+@asyncio.coroutine
+def add_soaked(event, balance):
+    """
+    :type event: obrbot.event.Event
+    """
+    raw_result = yield from event.async(event.db.incrbyfloat, soaked_key, balance)
+    return Decimal(raw_result)
+
+
+@asyncio.coroutine
+def get_next_soak_time(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    raw_result = yield from event.async(event.db.get, timer_key)
+    if raw_result is None:
+        soak_time = datetime.utcnow() + timedelta(seconds=soak_buildup_time)
+        delta_since_epoch = soak_time - datetime.datetime.utcfromtimestamp(0)  # hack to turn datetime into timedelta
+        timestamp = delta_since_epoch.total_seconds() * 1000
+        yield from event.async(event.db.set, timer_key, timestamp)
+    else:
+        soak_time = datetime.utcfromtimestamp(int(raw_result))
+    return soak_time
+
+
+@asyncio.coroutine
+def get_active(event):
+    users_counted = set()
+    min_time = datetime.utcnow() - timedelta(minutes=minutes_active)
+    channel = event.conn.channels[doge_channel]
+    for event_type, nick, *rest in (yield from channel.get_history(event, min_time)):
+        if event_type is EventType.message and nick != doge_nick:
+            users_counted.add(nick.lower())
+    return len(users_counted)
+
+
+@asyncio.coroutine
+def update_balance(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    stored_balance = yield from get_balance(event)
+
+    event.message("balance", target=doge_nick)
+    balance = Decimal((yield from event.conn.wait_for("^([0-9]*\.?[0-9]*)$", nick=doge_nick, chan=doge_nick)).group(1))
+
+    if stored_balance != balance:
+        logger.info("Updated balance from {} to {}".format(stored_balance, balance))
+        yield from set_balance(event, balance)
+
+    return balance
+
+
+@asyncio.coroutine
+def soak(event, soak_time):
+    """
+    Soaks all balance. This will sleep until the specified soak time.
+    :type event: obrbot.event.Event
+    :type soak_time: datetime
+    """
+    global timer_running
+    timer_running = True
+    now = datetime.utcnow()
+    if soak_time > now:
+        # if the soak time is in the future, wait for it
+        yield from asyncio.sleep((soak_time - now).total_seconds(), loop=event.loop)
+    balance = yield from get_balance(event)
+    active = yield from get_active(event)
+    event.message("Soaking {}!".format(balance))
+
+    balance = yield from update_balance(event)
+
+    event.message(".soak {}".format(int(balance / active)))
+
+    soaked_future = event.conn.wait_for(
+        "{} is soaking [0-9]* shibes with [0-9\.]* Doge each. Total: ([0-9\.]*)"
+        .format(event.conn.bot_nick), nick=doge_nick)
+
+    failed_future = event.conn.wait_for("Not enough doge.", nick=doge_nick, chan=doge_nick)
+
+    done, pending = yield from asyncio.wait([soaked_future, failed_future], loop=event.loop,
+                                            return_when=asyncio.FIRST_COMPLETED, timeout=20)
+
+    if soaked_future in done:
+        match = yield from soaked_future
+        soaked_amount = Decimal(match.group(1))
+        yield from add_balance(event, -soaked_amount)
+        yield from add_soaked(event, soaked_amount)
+    elif failed_future in done:
+        event.message("[Soak] Soak failed: Not enough doge!")
+    else:
+        event.message("[Soak] Soak failed: DogeWallet failed to respond!")
+    for future in pending:
+        future.cancel()  # we don't care anymore
+    timer_running = False
+
+
+@asyncio.coroutine
+def add_doge(event, amount_added, sender=None):
+    """
+    :type event: obrbot.event.Event
+    """
+    yield from add_balance(event, amount_added)
+    soak_time = yield from get_next_soak_time(event)
+    time_delta = soak_time - datetime.utcnow()
+    if sender is not None:
+        event.message("Thanks for the tip, {}! Soaking in {}!".format(sender, format_delta(time_delta)))
+
+    if timer_running:
+        return  # no need to start multiple timers
+    asyncio.async(soak(event, soak_time), loop=event.loop)
+
+
+@asyncio.coroutine
+@hook.regex("([^ ]*) is soaking [0-9]* shibes with ([0-9\.]*) Doge each. Total: [0-9\.]*", single_thread=True)
+def soaked_regex(match, event):
+    """
+    :type match: re.__Match[str]
+    :type event: obrbot.event.Event
+    """
+    if event.nick != doge_nick:
+        return
+
+    sender = match.group(1)
+
+    if sender.lower() == event.conn.bot_nick.lower():
+        return
+
+    second = yield from event.conn.wait_for("(.*)", nick=event.nick, chan=event.chan_name)
+
+    if event.conn.bot_nick.lower() not in second.group(1).lower().split():
+        return  # we aren't being soaked
+
+    amount = int(match.group(2))
+    yield from add_doge(event, amount)
+
+
+@asyncio.coroutine
+@hook.regex("\[Wow\!\] ([^ ]*) sent ([^ ]*) ([0-9*]\.?[0-9]*) Doge")
+def tipped(match, event):
+    if match.group(2).lower() != event.conn.bot_nick.lower():
+        return  # if we weren't tipped
+    sender = match.group(1)
+    amount = Decimal(match.group(3))
+    yield from add_doge(event, amount, sender)
+
+
+@asyncio.coroutine
+@hook.command("balance", autohelp=False)
+def balance_command(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    balance = yield from get_balance(event)
+    return "Balance: {}".format(balance)
+
+
+@asyncio.coroutine
+@hook.command("update-balance", autohelp=False)
+def update_balance_command(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    balance = yield from update_balance(event)
+    return "Balance: {}".format(balance)
+
+
+@asyncio.coroutine
+@hook.command("soaked", autohelp=False)
+def soaked_command(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    balance = yield from get_soaked(event)
+    return "Total Soaked: {}".format(balance)
