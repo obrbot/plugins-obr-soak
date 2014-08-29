@@ -16,7 +16,7 @@ doge_nick = 'DogeWallet'
 doge_channel = '#doge-coin'
 soak_buildup_time = 15
 
-minutes_active = 5.1
+minutes_active = 6
 
 logger = logging.getLogger('obrbot')
 
@@ -134,7 +134,20 @@ def get_active(event):
     for event_type, nick, *rest in (yield from channel.get_history(event, min_time)):
         if event_type is EventType.message and nick != doge_nick:
             users_counted.add(nick.lower())
+    logger.info("{} active according to log".format(len(users_counted)))
     return len(users_counted)
+
+
+@asyncio.coroutine
+def get_active_doge_wallet(event):
+    """
+    :type event: obrbot.event.Event
+    """
+    event.message("active", target=doge_nick)
+    active = (yield from event.conn.wait_for("^Active Shibes: ([0-9]*)$", nick=doge_nick, chan=doge_nick)).group(1)
+
+    logger.info("{} active according to DogeWallet")
+    return int(active)
 
 
 @asyncio.coroutine
@@ -198,13 +211,15 @@ def soak(event, soak_time):
 
     balance = yield from get_balance(event)
     active = yield from get_active(event)
+    doge_wallet_active = yield from get_active_doge_wallet(event)
+    if active < doge_wallet_active:
+        event.message("Ping Dabo: My active count ({}) is less than DogeWallet's ({})".format(active,
+                                                                                              doge_wallet_active))
+        active = doge_wallet_active
     event.message("Soaking {}!".format(balance))
 
     balance = yield from update_balance(event)
     soaking_per_person = int(balance / active)
-    # event.message("I count {} active users".format(active))
-    # event.message(".active")
-    # event.message("Soaking {} per person for a total of {}".format(soaking_per_person, soaking_per_person * active))
 
     event.message(".soak {}".format(soaking_per_person))
 
@@ -218,6 +233,8 @@ def soak(event, soak_time):
         yield from add_soaked(event, soaked_amount)
     else:
         event.message("Soak failed: {}".format(second))
+        if second == "Not enough doge.":
+            event.message("My active count: {}, DogeWallet's active count: {}".format(active, doge_wallet_active))
 
 
 @asyncio.coroutine
