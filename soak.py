@@ -220,7 +220,10 @@ def soak(event, soak_time):
     balance = yield from update_balance(event)
     soaking_per_person = int(balance / active)
 
-    event.message("Soaking {} * {} = {}!".format(soaking_per_person, active, soaking_per_person * active))
+    if soaking_per_person <= 0:
+        event.message("Not enough doge to go around, saving for next soak.")
+        return
+
     event.message(".soak {}".format(soaking_per_person))
 
     # Second is a match object if successful, error message string otherwise
@@ -242,9 +245,18 @@ def add_doge(event, amount_added, sender=None):
     """
     :type event: obrbot.event.Event
     """
-    yield from add_balance(event, amount_added)
+    balance = yield from add_balance(event, amount_added)
+
+    active = yield from get_active(event)
+    if balance < active:
+        if sender is not None:
+            event.message("Thanks for the tip, {}! I'll soak it when I get at least {} more doge".format(
+                sender, active - balance))
+        return
+
     soak_time = yield from get_next_soak_time(event)
     time_delta = soak_time - datetime.utcnow()
+
     if sender is not None:
         event.message("Thanks for the tip, {}! Soaking in {}!".format(sender, format_delta(time_delta)))
 
