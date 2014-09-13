@@ -210,17 +210,17 @@ def soak(event, soak_time):
     timer_running = False
 
     balance = yield from get_balance(event)
-    active = yield from get_active(event)
     doge_wallet_active = yield from get_active_doge_wallet(event)
+    active = yield from get_active(event)
     if active < doge_wallet_active:
         event.message("Ping Dabo: My active count ({}) is less than DogeWallet's ({})".format(active,
                                                                                               doge_wallet_active))
         active = doge_wallet_active
-    event.message("Soaking {}!".format(balance))
 
     balance = yield from update_balance(event)
     soaking_per_person = int(balance / active)
 
+    event.message("Soaking {} * {} = {}!".format(soaking_per_person, active, soaking_per_person * active))
     event.message(".soak {}".format(soaking_per_person))
 
     # Second is a match object if successful, error message string otherwise
