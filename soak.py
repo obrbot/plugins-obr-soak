@@ -146,7 +146,7 @@ def get_active_doge_wallet(event):
     event.message("active", target=doge_nick)
     active = (yield from event.conn.wait_for("^Active Shibes: ([0-9]*)$", nick=doge_nick, chan=doge_nick)).group(1)
 
-    logger.info("{} active according to DogeWallet")
+    logger.info("{} active according to DogeWallet".format(active))
     return int(active)
 
 
