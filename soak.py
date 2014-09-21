@@ -16,7 +16,7 @@ doge_nick = 'DogeWallet'
 doge_channel = '#doge-coin'
 soak_buildup_time = 15
 
-minutes_active = 6
+minutes_active = 5
 
 logger = logging.getLogger('obrbot')
 
@@ -132,7 +132,7 @@ def get_active(event):
     min_time = datetime.utcnow() - timedelta(minutes=minutes_active)
     channel = event.conn.channels[doge_channel]
     for event_type, nick, *rest in (yield from channel.get_history(event, min_time)):
-        if event_type is EventType.message and nick != doge_nick:
+        if event_type in (EventType.nick, EventType.message) and nick != doge_nick:
             users_counted.add(nick.lower())
     logger.info("{} active according to log".format(len(users_counted)))
     return len(users_counted)
